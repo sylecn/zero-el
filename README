@@ -1,6 +1,6 @@
 * COMMENT -*- mode: org -*-
 #+Date: 2019-09-01
-Time-stamp: <2019-10-28>
+Time-stamp: <2020-02-16>
 
 * zero-el
 
@@ -8,7 +8,7 @@ zero-el provides zero-input-pinyin, an Emacs pinyin input method for Chinese
 and zero-input-framework, which is an emacs Chinese input method framework.
 
 This branch is created for one-file ELPA release. For more information, please
-check README in master branch.
+check [[https://gitlab.emacsos.com/sylecn/zero-el/blob/master/README][README in master branch]].
 
 * introduce to zero-el
 https://blog.emacsos.com/zero-el.html

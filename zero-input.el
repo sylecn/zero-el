@@ -12,7 +12,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; Version: 2.2.1
+;; Version: 2.5.0
 ;; URL: https://gitlab.emacsos.com/sylecn/zero-el
 ;; Package-Requires: ((emacs "24.3") (s "1.2.0"))
 
@@ -246,7 +246,7 @@ If item is not in lst, return nil."
 
 ;; zero-input-el version
 (defvar zero-input-version nil "Zero package version.")
-(setq zero-input-version "2.2.1")
+(setq zero-input-version "2.5.0")
 
 ;; FSM state
 (defconst zero-input--state-im-off 'IM-OFF)
@@ -271,23 +271,37 @@ through")
 this is used to help with buffer focus in/out events")
 
 (defvar-local zero-input-state zero-input--state-im-off)
-(defvar-local zero-input-full-width-p nil
+(defcustom zero-input-full-width-p nil
   "Set to t to enable full-width mode.
 In full-width mode, commit ascii char will insert full-width char if there is a
 corresponding full-width char.  This full-width char map is
 independent from punctuation map.  You can change this via
-`zero-input-toggle-full-width'")
-(defvar-local zero-input-punctuation-level zero-input-punctuation-level-basic
-  "Punctuation level.
+`zero-input-toggle-full-width'"
+  :group 'zero-input
+  :safe t
+  :type 'boolean)
+(make-variable-buffer-local 'zero-input-full-width-p)
+(defcustom zero-input-punctuation-level zero-input-punctuation-level-basic
+  "Default punctuation level.
 
 Should be one of
 `zero-input-punctuation-level-basic'
 `zero-input-punctuation-level-full'
-`zero-input-punctuation-level-none'")
+`zero-input-punctuation-level-none'"
+  :group 'zero-input
+  :safe t
+  :type `(choice (const :tag "zero-input-punctuation-level-basic"
+			,zero-input-punctuation-level-basic)
+		 (const :tag "zero-input-punctuation-level-full"
+			,zero-input-punctuation-level-full)
+		 (const :tag "zero-input-punctuation-level-none"
+			,zero-input-punctuation-level-none)))
+(make-variable-buffer-local 'zero-input-punctuation-level)
 (defvar zero-input-punctuation-levels (list zero-input-punctuation-level-basic
-				      zero-input-punctuation-level-full
-				      zero-input-punctuation-level-none)
+					    zero-input-punctuation-level-full
+					    zero-input-punctuation-level-none)
   "Punctuation levels to use when `zero-input-cycle-punctuation-level'.")
+
 (defvar-local zero-input-double-quote-flag nil
   "Non-nil means next double quote insert close quote.
 
@@ -306,8 +320,8 @@ Otherwise, next single quote insert close quote.")
 Used to handle Chinese dot in digit input.
 e.g. 1。3 could be converted to 1.3.")
 (defcustom zero-input-auto-fix-dot-between-numbers t
-  "Non-nil means zero should change 1。3 to 1.3."
-  :group 'zero
+  "Non-nil means zero should change 1。3 to 1.3, H。264 to H.264."
+  :group 'zero-input
   :type 'boolean)
 (defvar-local zero-input-preedit-str "")
 (defvar-local zero-input-candidates nil)
@@ -315,7 +329,7 @@ e.g. 1。3 could be converted to 1.3.")
   "How many candidates to show on each page.
 
 Change will be effective only in new `zero-input-mode' buffer."
-  :group 'zero
+  :group 'zero-input
   :type 'integer)
 (defvar-local zero-input-current-page 0 "Current page number.  count from 0.")
 (defvar-local zero-input-initial-fetch-size 21
@@ -856,11 +870,15 @@ Argument CH the character that was inserted."
   (if (and zero-input-mode zero-input-auto-fix-dot-between-numbers)
       (let ((ch (or ch (elt (this-command-keys-vector) 0))))
 	(zero-input-add-recent-insert-char ch)
-	;; if user typed digit “。” digit, auto convert “。” to “.”
-	(cl-flet ((my-digit-char-p (ch) (and (>= ch ?0) (<= ch ?9))))
-	  (when (and (my-digit-char-p (ring-ref zero-input-recent-insert-chars 0))
+	;; if user typed "[0-9A-Z]。[0-9]", auto convert “。” to “.”
+	(cl-flet ((my-digit-char-p (ch) (and (>= ch ?0) (<= ch ?9)))
+		  (my-capital-letter-p (ch) (and (>= ch ?A) (<= ch ?Z))))
+	  ;; ring-ref index 2 is least recent inserted char.
+	  (when (and (let ((ch (ring-ref zero-input-recent-insert-chars 2)))
+		       (or (my-digit-char-p ch)
+			   (my-capital-letter-p ch)))
 		     (equal ?。 (ring-ref zero-input-recent-insert-chars 1))
-		     (my-digit-char-p (ring-ref zero-input-recent-insert-chars 2)))
+		     (my-digit-char-p (ring-ref zero-input-recent-insert-chars 0)))
 	    (delete-char -2)
 	    (insert "." (car (ring-elements zero-input-recent-insert-chars))))))))
 
@@ -892,10 +910,13 @@ virtual functions                   corresponding variable
 
 registered input method is saved in `zero-input-ims'"
   ;; add or replace entry in `zero-input-ims'
-  (unless (symbolp im-name)
-    (signal 'wrong-type-argument (list 'symbolp im-name)))
-  (setq zero-input-ims (assq-delete-all im-name zero-input-ims))
+  (unless (stringp im-name)
+    (signal 'wrong-type-argument (list 'stringp im-name)))
+  (setq zero-input-ims (delq (assoc im-name zero-input-ims) zero-input-ims))
   (setq zero-input-ims (push (cons im-name im-functions-alist) zero-input-ims)))
+
+;; Built-in empty input method. It only handles Chinese punctuation.
+(zero-input-register-im "empty" nil)
 
 ;;============
 ;; public API
@@ -940,21 +961,32 @@ LEVEL the level to set to."
   (message "punctuation level set to %s" zero-input-punctuation-level))
 
 ;;;###autoload
-(defun zero-input-set-im (im-name)
+(defun zero-input-set-im (&optional im-name)
   "Select zero input method for current buffer.
 
-if IM-NAME is nil, use default empty input method"
-  ;; TODO provide auto completion for im-name
-  (interactive "SSet input method to: ")
+IM-NAME (a string) should be a registered input method in zero-input."
+  (interactive)
   ;; when switch away from an IM, run last IM's :shutdown function.
   (if zero-input-im
-      (let ((shutdown-func (cdr (assq :shutdown (cdr (assq zero-input-im zero-input-ims))))))
+      (let ((shutdown-func (cdr (assq :shutdown (cdr (assoc zero-input-im zero-input-ims))))))
 	(if (functionp shutdown-func)
 	    (funcall shutdown-func))))
-  (if im-name
-      (let ((im-functions (cdr (assq im-name zero-input-ims))))
-	(if im-functions
+  (cond
+   ((null im-name)
+    ;; TODO is there an easier way to provide auto complete in mini buffer?
+    ;; I used a recursive call to the same function.
+    (let ((im-name-str (completing-read "Set input method to: " zero-input-ims)))
+      (if (s-blank? im-name-str)
+	  (error "Input method name is required")
+	(zero-input-set-im im-name-str))))
+   ((symbolp im-name)
+    ;; for backward compatibility
+    (zero-input-set-im (symbol-name im-name)))
+   (t (let* ((im-slot (assoc im-name zero-input-ims))
+	     (im-functions (cdr im-slot)))
+	(if im-slot
 	    (progn
+	      (zero-input-debug "switching to %s input method" im-name)
 	      ;; TODO create a macro to reduce code duplication and human
 	      ;; error.
 	      ;;
@@ -990,16 +1022,7 @@ if IM-NAME is nil, use default empty input method"
 		(if (functionp init-func)
 		    (funcall init-func)))
 	      (setq zero-input-im im-name))
-	  (error "Input method %s not registered in zero" im-name)))
-    (zero-input-debug "using default empty input method")
-    (setq zero-input-build-candidates-func 'zero-input-build-candidates-default)
-    (setq zero-input-build-candidates-async-func 'zero-input-build-candidates-async-default)
-    (setq zero-input-can-start-sequence-func 'zero-input-can-start-sequence-default)
-    (setq zero-input-handle-preedit-char-func 'zero-input-handle-preedit-char-default)
-    (setq zero-input-get-preedit-str-for-panel-func 'zero-input-get-preedit-str-for-panel-default)
-    (setq zero-input-backspace-func 'zero-input-backspace-default)
-    (setq zero-input-preedit-start-func nil)
-    (setq zero-input-preedit-end-func nil)))
+	  (error "Input method %S not registered in zero" im-name))))))
 
 ;;;###autoload
 (defun zero-input-set-default-im (im-name)
@@ -1070,7 +1093,7 @@ if IM-NAME is nil, use default empty input method"
 ;;===============================
 
 (zero-input-register-im
- 'zero-input-table
+ "zero-input-table"
  '((:build-candidates . zero-input-table-build-candidates)
    (:can-start-sequence . zero-input-table-can-start-sequence)))
 
@@ -1211,21 +1234,23 @@ DELETE-CANDIDATE-COMPLETE the async handler function."
 ;; basic data and emacs facility
 ;;===============================
 
-;; these two var is only used in docstring to avoid checkdoc line-too-long
-;; error.
-(defvar zero-input-pinyin-service-interface-xml-file
-  "/usr/share/dbus-1/interfaces/com.emacsos.zero.ZeroPinyinService1.ZeroPinyinServiceInterface.xml")
-(defvar zero-input-pinyin-service-interface-xml-url
-  "https://gitlab.emacsos.com/sylecn/zero-input-pinyin-service/blob/master/com.emacsos.zero.ZeroPinyinService1.ZeroPinyinServiceInterface.xml")
 (defcustom zero-input-pinyin-fuzzy-flag 0
-  "Non-nil means use this value as GetCandidatesV2 fuzzy_flag param.
-see zero-input-pinyin-service dbus interface xml for document.
+  "Non-nil means enable fuzzy pinyin when calling zero pinyin service.
+
+Fuzzy pinyin means some shengmu and some yunmu could be used
+interchangeably, such as zh <-> z, l <-> n.
+
+For supported values, please see zero-input-pinyin-service dbus
+interface xml comment for GetCandidatesV2 method fuzzy_flag param.
 
 You can find the xml file locally at
-`zero-input-pinyin-service-interface-xml-file' or online at
-`zero-input-pinyin-service-interface-xml-url'."
-  :type 'integer
-  :group 'zero-input-pinyin)
+/usr/share/dbus-1/interfaces/\
+com.emacsos.zero.ZeroPinyinService1.ZeroPinyinServiceInterface.xml
+or online at
+https://gitlab.emacsos.com/sylecn/zero-pinyin-service/\
+blob/master/com.emacsos.zero.ZeroPinyinService1.ZeroPinyinServiceInterface.xml"
+  :group 'zero-input-pinyin
+  :type 'integer)
 (defvar zero-input-pinyin-use-async-fetch nil
   "Non-nil means use async dbus call to get candidates.")
 (setq zero-input-pinyin-use-async-fetch nil)
@@ -1469,7 +1494,9 @@ CH the character user typed."
    ((= ch zero-input-next-page-key)
     (zero-input-pinyin-page-down))
    (t (let ((str (zero-input-convert-punctuation ch)))
-	(if str
+	;; ?' is used as pinyin substring separator, never auto commit on ?'
+	;; insert when pre-editing.
+	(if (and str (not (eq ch ?')))
 	    (when (zero-input-pinyin-commit-first-candidate-in-full)
 	      (zero-input-set-state zero-input--state-im-waiting-input)
 	      (insert str))
@@ -1526,7 +1553,7 @@ DIGIT 0 means delete 10th candidate."
 (defun zero-input-pinyin-register-im ()
   "Register pinyin input method in zero framework."
   (zero-input-register-im
-   'pinyin
+   "pinyin"
    (append
     (if zero-input-pinyin-use-async-fetch
 	'((:build-candidates-async . zero-input-pinyin-build-candidates-async))
